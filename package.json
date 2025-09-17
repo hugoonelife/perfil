@@ -9,8 +9,9 @@
     "register": "node src/register-commands.js"
   },
   "dependencies": {
-    "discord.js": "^14.16.0",
-    "dotenv": "^16.4.5"
+    "discord.js": "^14.22.1",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
