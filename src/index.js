@@ -22,6 +22,10 @@ const PORT = process.env.PORT || process.env.WEBHOOK_PORT || 3000;
 // key: userId → { deseo, referentes, contexto, sesiones, racha, lastMsgId, channelId }
 const profiles = new Map();
 
+// ===== Inicia el servidor HTTP ANTES del login =====
+startWebhookServer(client);
+
+
 // ===== Discord client =====
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -142,6 +146,10 @@ function startWebhookServer(client) {
         client.guilds.cache.get(guild_id) || (await client.guilds.fetch(guild_id));
       const member = await guild.members.fetch(user_id);
       const user = member.user;
+      const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+  partials: [Partials.Channel],
+});
 
       // Canal de perfil que viene desde n8n
       const channel =
