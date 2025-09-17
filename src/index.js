@@ -22,19 +22,17 @@ const PORT = process.env.PORT || process.env.WEBHOOK_PORT || 3000;
 // key: userId → { deseo, referentes, contexto, sesiones, racha, lastMsgId, channelId }
 const profiles = new Map();
 
-// ===== Inicia el servidor HTTP ANTES del login =====
-startWebhookServer(client);
-
-
 // ===== Discord client =====
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers], // <- añadido GuildMembers
   partials: [Partials.Channel],
 });
 
+// ===== Arranca Express UNA sola vez (antes del login) =====
+startWebhookServer(client);
+
 client.once(Events.ClientReady, () => {
   console.log(`✅ Conectado como ${client.user.tag}`);
-  startWebhookServer(client); // inicia Express
 });
 
 // ===== Embed y botones =====
@@ -106,7 +104,7 @@ async function publishOrRefreshProfile(channel, user, patch = {}) {
 }
 
 // ===== Servidor Express: solo /webhooks/session-end =====
-function startWebhookServer(client) {
+function startWebhookServer(clientInstance) {
   const app = express();
   app.use(express.json());
 
@@ -120,11 +118,18 @@ function startWebhookServer(client) {
   }
 
   // Healthcheck
-  app.get('/health', (_req, res) => res.json({ ok: true }));
+  app.get('/health', (_req, res) => {
+    res.json({ ok: true, botReady: !!clientInstance?.user });
+  });
 
   // n8n manda canal + valores → el bot solo refresca el embed
   app.post('/webhooks/session-end', checkSecret, async (req, res) => {
     try {
+      if (!clientInstance?.user) {
+        // si el bot aún no está listo, devolvemos 503 controlado
+        return res.status(503).json({ error: 'bot_not_ready' });
+      }
+
       const {
         guild_id,
         user_id,
@@ -143,13 +148,10 @@ function startWebhookServer(client) {
       }
 
       const guild =
-        client.guilds.cache.get(guild_id) || (await client.guilds.fetch(guild_id));
+        clientInstance.guilds.cache.get(guild_id) ||
+        (await clientInstance.guilds.fetch(guild_id));
       const member = await guild.members.fetch(user_id);
       const user = member.user;
-      const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
-  partials: [Partials.Channel],
-});
 
       // Canal de perfil que viene desde n8n
       const channel =
@@ -190,4 +192,6 @@ function startWebhookServer(client) {
 }
 
 // ===== Inicia el bot =====
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.DISCORD_TOKEN).catch(err => {
+  console.error('❌ Discord login failed:', err);
+});
