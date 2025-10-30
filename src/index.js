@@ -69,6 +69,51 @@ function buildComponents() {
   ];
 }
 
+import 'dotenv/config';
+
+const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;
+const N8N_WEBHOOK_SECRET = process.env.N8N_WEBHOOK_SECRET;
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isButton()) return;
+
+  if (interaction.customId.startsWith('change_info__')) {
+    const [, meta] = interaction.customId.split('__'); // meta desde n8n (p.ej. userName)
+
+    try {
+      // feedback rápido al usuario (ephemeral)
+      await interaction.reply({ content: '⚡️ Abriendo editor de info…', ephemeral: true });
+
+      // POST a n8n con TODO el contexto útil
+      await fetch(N8N_WEBHOOK_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(N8N_WEBHOOK_SECRET ? { 'x-webhook-secret': N8N_WEBHOOK_SECRET } : {})
+        },
+        body: JSON.stringify({
+          type: 'change_info_clicked',
+          action: 'change_info',
+          meta_from_custom_id: meta,            // lo que metiste desde n8n
+          clicked_by_user_id: interaction.user.id,
+          clicked_by_user_tag: interaction.user.tag,
+          channel_id: interaction.channelId,
+          guild_id: interaction.guildId,
+          timestamp: new Date().toISOString()
+        })
+      });
+    } catch (e) {
+      console.error('change_info error:', e);
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp({ content: '❌ Error enviando datos a n8n.', ephemeral: true });
+      } else {
+        await interaction.reply({ content: '❌ Error enviando datos a n8n.', ephemeral: true });
+      }
+    }
+  }
+});
+
+
 // ===== Envío/actualización del embed =====
 async function publishOrRefreshProfile(channel, user, patch = {}) {
   const prev = profiles.get(user.id) || {
