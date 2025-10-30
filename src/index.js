@@ -69,49 +69,62 @@ function buildComponents() {
   ];
 }
 
-import 'dotenv/config';
+// ===== Configuración directa de n8n =====
+const N8N_WEBHOOK_URL = 'https://tu-n8n.n8n.cloud/webhook/dojo/activar'; // cambia por tu webhook real
+const N8N_WEBHOOK_SECRET = 'opcional123'; // si quieres usar un secreto, si no, deja vacío
 
-const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;
-const N8N_WEBHOOK_SECRET = process.env.N8N_WEBHOOK_SECRET;
-
-client.on(Events.InteractionCreate, async (interaction) => {
+client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
+  // === Botón Cambiar Info ===
   if (interaction.customId.startsWith('change_info__')) {
-    const [, meta] = interaction.customId.split('__'); // meta desde n8n (p.ej. userName)
+    const [, meta] = interaction.customId.split('__'); // 'meta' viene del botón enviado desde n8n
 
     try {
-      // feedback rápido al usuario (ephemeral)
-      await interaction.reply({ content: '⚡️ Abriendo editor de info…', ephemeral: true });
+      // Mensaje rápido para el usuario
+      await interaction.reply({ content: '⚡️ Enviando tu información al Dojo…', ephemeral: true });
 
-      // POST a n8n con TODO el contexto útil
-      await fetch(N8N_WEBHOOK_URL, {
+      // Enviar datos al webhook de n8n
+      const payload = {
+        type: 'change_info_clicked',
+        action: 'change_info',
+        meta_from_custom_id: meta,             // valor que pusiste en el botón desde n8n
+        clicked_by_user_id: interaction.user.id,
+        clicked_by_user_tag: interaction.user.tag,
+        channel_id: interaction.channelId,
+        guild_id: interaction.guildId,
+        timestamp: new Date().toISOString()
+      };
+
+      const response = await fetch(N8N_WEBHOOK_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(N8N_WEBHOOK_SECRET ? { 'x-webhook-secret': N8N_WEBHOOK_SECRET } : {})
         },
-        body: JSON.stringify({
-          type: 'change_info_clicked',
-          action: 'change_info',
-          meta_from_custom_id: meta,            // lo que metiste desde n8n
-          clicked_by_user_id: interaction.user.id,
-          clicked_by_user_tag: interaction.user.tag,
-          channel_id: interaction.channelId,
-          guild_id: interaction.guildId,
-          timestamp: new Date().toISOString()
-        })
+        body: JSON.stringify(payload)
       });
-    } catch (e) {
-      console.error('change_info error:', e);
-      if (interaction.deferred || interaction.replied) {
-        await interaction.followUp({ content: '❌ Error enviando datos a n8n.', ephemeral: true });
+
+      if (!response.ok) {
+        const txt = await response.text();
+        console.error('❌ Error enviando a n8n:', txt);
+        await interaction.followUp({ content: '❌ Error al contactar con el Dojo.', ephemeral: true });
       } else {
-        await interaction.reply({ content: '❌ Error enviando datos a n8n.', ephemeral: true });
+        console.log('✅ Enviado correctamente a n8n');
+      }
+    } catch (error) {
+      console.error('❌ Error general:', error);
+      if (interaction.deferred || interaction.replied) {
+        await interaction.followUp({ content: '❌ Hubo un error al enviar la info.', ephemeral: true });
+      } else {
+        await interaction.reply({ content: '❌ Hubo un error al enviar la info.', ephemeral: true });
       }
     }
+
+    return;
   }
 });
+
 
 
 // ===== Envío/actualización del embed =====
