@@ -15,6 +15,10 @@ import {
   TextInputStyle
 } from 'discord.js';
 
+import axios from 'axios';
+import https from 'https';
+
+
 // ===== Config servidor HTTP =====
 const PORT = process.env.PORT || process.env.WEBHOOK_PORT || 3000;
 
@@ -75,54 +79,54 @@ const N8N_WEBHOOK_URL = 'https://n8n-n8n.nrna5j.easypanel.host/webhook/update-pe
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
-  // === Botón Cambiar Info ===
   if (interaction.customId.startsWith('change_info__')) {
-    const [, meta] = interaction.customId.split('__'); // 'meta' viene del botón enviado desde n8n
+    const [, meta] = interaction.customId.split('__'); // meta = dato que mandaste desde n8n (por ej. userName)
 
     try {
-      // Mensaje rápido para el usuario
-      await interaction.reply({ content: '⚡️ Enviando tu información al Dojo…', ephemeral: true });
+      // Paso 1: responder rápido para que Discord no marque "Interacción fallida"
+      await interaction.deferReply({ ephemeral: true });
 
-      // Enviar datos al webhook de n8n
+      // Paso 2: construir payload
       const payload = {
         type: 'change_info_clicked',
         action: 'change_info',
-        meta_from_custom_id: meta,             // valor que pusiste en el botón desde n8n
+        meta_from_custom_id: meta,
         clicked_by_user_id: interaction.user.id,
         clicked_by_user_tag: interaction.user.tag,
         channel_id: interaction.channelId,
         guild_id: interaction.guildId,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
 
-      const response = await fetch(N8N_WEBHOOK_URL, {
-        method: 'POST',
+      // Paso 3: enviar a n8n con axios + agente https
+      const res = await axios.post(N8N_WEBHOOK_URL, payload, {
         headers: {
           'Content-Type': 'application/json',
-          ...(N8N_WEBHOOK_SECRET ? { 'x-webhook-secret': N8N_WEBHOOK_SECRET } : {})
+          ...(N8N_WEBHOOK_SECRET ? { 'x-webhook-secret': N8N_WEBHOOK_SECRET } : {}),
         },
-        body: JSON.stringify(payload)
+        httpsAgent, // esto evita errores de certificado
+        timeout: 10000,
       });
 
-      if (!response.ok) {
-        const txt = await response.text();
-        console.error('❌ Error enviando a n8n:', txt);
-        await interaction.followUp({ content: '❌ Error al contactar con el Dojo.', ephemeral: true });
+      // Paso 4: mensaje final en Discord
+      if (res.status >= 200 && res.status < 300) {
+        await interaction.editReply('⚡️ Información enviada al Dojo correctamente.');
       } else {
-        console.log('✅ Enviado correctamente a n8n');
+        await interaction.editReply(`❌ Error al contactar con n8n (${res.status}).`);
       }
     } catch (error) {
-      console.error('❌ Error general:', error);
-      if (interaction.deferred || interaction.replied) {
-        await interaction.followUp({ content: '❌ Hubo un error al enviar la info.', ephemeral: true });
+      console.error('❌ Error enviando a n8n:', error.message);
+
+      // Si el error fue de red o timeout
+      if (interaction.deferred) {
+        await interaction.editReply('❌ No se pudo conectar con el Dojo (timeout o certificado).');
       } else {
-        await interaction.reply({ content: '❌ Hubo un error al enviar la info.', ephemeral: true });
+        await interaction.reply({ content: '❌ Error al contactar con el Dojo.', ephemeral: true });
       }
     }
-
-    return;
   }
 });
+
 
 
 
