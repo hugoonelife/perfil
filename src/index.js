@@ -77,6 +77,8 @@ function buildComponents() {
 const N8N_WEBHOOK_URL = 'https://n8n-n8n.nrna5j.easypanel.host/webhook/update-perfil'; // cambia por tu webhook real
 const N8N_WEBHOOK_SECRET = 'opcional123'; // cambia por tu webhook real
 
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
@@ -101,13 +103,19 @@ client.on('interactionCreate', async (interaction) => {
 
       // Paso 3: enviar a n8n con axios + agente https
       const res = await axios.post(N8N_WEBHOOK_URL, payload, {
-        headers: {
-          'Content-Type': 'application/json',
-          ...(N8N_WEBHOOK_SECRET ? { 'x-webhook-secret': N8N_WEBHOOK_SECRET } : {}),
-        },
-        httpsAgent, // esto evita errores de certificado
-        timeout: 10000,
-      });
+  headers: {
+    'Content-Type': 'application/json',
+    ...(N8N_WEBHOOK_SECRET ? { 'x-webhook-secret': N8N_WEBHOOK_SECRET } : {})
+  },
+  httpsAgent,
+  timeout: 15000,
+  maxRedirects: 3,
+  validateStatus: () => true // <- para loguear cuerpo aunque no sea 2xx
+});
+
+console.log('n8n -> status:', res.status, 'body:',
+  typeof res.data === 'string' ? res.data : JSON.stringify(res.data));
+
 
       // Paso 4: mensaje final en Discord
       if (res.status >= 200 && res.status < 300) {
