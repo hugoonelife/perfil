@@ -119,7 +119,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       console.log('n8n(change_info) ->', res.status, typeof res.data === 'string' ? res.data : JSON.stringify(res.data));
 
       if (res.status >= 200 && res.status < 300) {
-        await interaction.editReply('⚡️ Información enviada al Dojo correctamente.');
+        await interaction.editReply('⚡️ cargando...');
       } else if (res.status === 401 || res.status === 403) {
         await interaction.editReply('⛔ Secreto del webhook inválido (x-webhook-secret).');
       } else if (res.status === 404) {
