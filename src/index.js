@@ -75,6 +75,7 @@ function buildComponents() {
 
 // ===== Configuración directa de n8n =====
 const N8N_WEBHOOK_URL = 'https://n8n-n8n.nrna5j.easypanel.host/webhook/update-perfil'; // cambia por tu webhook real
+const N8N_WEBHOOK_SECRET = 'opcional123'; // cambia por tu webhook real
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
