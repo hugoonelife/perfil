@@ -18,7 +18,6 @@ import {
 import axios from 'axios';
 import https from 'https';
 
-
 // ===== Config servidor HTTP =====
 const PORT = process.env.PORT || process.env.WEBHOOK_PORT || 3000;
 
@@ -28,7 +27,12 @@ const profiles = new Map();
 
 // ===== Discord client =====
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers], // <- añadido GuildMembers
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,   // leer mensajes
+    GatewayIntentBits.MessageContent    // leer contenido
+  ],
   partials: [Partials.Channel],
 });
 
@@ -74,22 +78,22 @@ function buildComponents() {
 }
 
 // ===== Configuración directa de n8n =====
-const N8N_WEBHOOK_URL = 'https://n8n-n8n.nrna5j.easypanel.host/webhook/update-perfil'; // cambia por tu webhook real
-const N8N_WEBHOOK_SECRET = 'opcional123'; // cambia por tu webhook real
+const N8N_WEBHOOK_URL = 'https://n8n-n8n.nrna5j.easypanel.host/webhook/update-perfil'; // PRODUCCIÓN
+const N8N_WEBHOOK_SECRET = 'opcional123'; // si no usas auth en n8n, pon ''
 
+// Agente HTTPS para tolerar cert self-signed (easypanel/dev)
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-client.on('interactionCreate', async (interaction) => {
+// ===== Interacciones: botón change_info__... → enviar a n8n =====
+client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isButton()) return;
 
   if (interaction.customId.startsWith('change_info__')) {
-    const [, meta] = interaction.customId.split('__'); // meta = dato que mandaste desde n8n (por ej. userName)
+    const [, meta] = interaction.customId.split('__'); // payload desde n8n (userName/ID/etc.)
 
     try {
-      // Paso 1: responder rápido para que Discord no marque "Interacción fallida"
       await interaction.deferReply({ ephemeral: true });
 
-      // Paso 2: construir payload
       const payload = {
         type: 'change_info_clicked',
         action: 'change_info',
@@ -101,32 +105,30 @@ client.on('interactionCreate', async (interaction) => {
         timestamp: new Date().toISOString(),
       };
 
-      // Paso 3: enviar a n8n con axios + agente https
       const res = await axios.post(N8N_WEBHOOK_URL, payload, {
-  headers: {
-    'Content-Type': 'application/json',
-    ...(N8N_WEBHOOK_SECRET ? { 'x-webhook-secret': N8N_WEBHOOK_SECRET } : {})
-  },
-  httpsAgent,
-  timeout: 15000,
-  maxRedirects: 3,
-  validateStatus: () => true // <- para loguear cuerpo aunque no sea 2xx
-});
+        headers: {
+          'Content-Type': 'application/json',
+          ...(N8N_WEBHOOK_SECRET ? { 'x-webhook-secret': N8N_WEBHOOK_SECRET } : {})
+        },
+        httpsAgent,
+        timeout: 15000,
+        maxRedirects: 3,
+        validateStatus: () => true
+      });
 
-console.log('n8n -> status:', res.status, 'body:',
-  typeof res.data === 'string' ? res.data : JSON.stringify(res.data));
+      console.log('n8n(change_info) ->', res.status, typeof res.data === 'string' ? res.data : JSON.stringify(res.data));
 
-
-      // Paso 4: mensaje final en Discord
       if (res.status >= 200 && res.status < 300) {
         await interaction.editReply('⚡️ Información enviada al Dojo correctamente.');
+      } else if (res.status === 401 || res.status === 403) {
+        await interaction.editReply('⛔ Secreto del webhook inválido (x-webhook-secret).');
+      } else if (res.status === 404) {
+        await interaction.editReply('❓ Webhook de n8n no encontrado (URL/path).');
       } else {
-        await interaction.editReply(`❌ Error al contactar con n8n (${res.status}).`);
+        await interaction.editReply(`❌ Error de n8n (${res.status}).`);
       }
     } catch (error) {
       console.error('❌ Error enviando a n8n:', error.message);
-
-      // Si el error fue de red o timeout
       if (interaction.deferred) {
         await interaction.editReply('❌ No se pudo conectar con el Dojo (timeout o certificado).');
       } else {
@@ -136,8 +138,59 @@ console.log('n8n -> status:', res.status, 'body:',
   }
 });
 
+// ===== Mensajes: SOLO en el canal ◉🥷perfil del PROPIO usuario → enviar a n8n =====
+client.on(Events.MessageCreate, async (message) => {
+  try {
+    if (message.author.bot) return;
 
+    // Debe ser exactamente el canal de perfil
+    if (message.channel?.name !== '◉🥷perfil') return;
 
+    const guild = message.guild;
+    const parentId = message.channel?.parentId;
+    if (!guild || !parentId) return;
+
+    // Validar que es SU categoría/templo
+    const expectedTempleName = `◉🏯templo-de-${message.author.username.toLowerCase()}`;
+    const siblingTemple = guild.channels.cache.find(
+      c => c.parentId === parentId && c.name === expectedTempleName
+    );
+    if (!siblingTemple) return;
+
+    const payload = {
+      type: 'perfil_message',
+      user_id: message.author.id,
+      user_tag: message.author.tag,
+      content: message.content ?? '',
+      attachments: Array.from(message.attachments.values()).map(a => ({
+        id: a.id,
+        name: a.name,
+        url: a.url,
+        contentType: a.contentType
+      })),
+      perfil_channel_id: message.channel.id,
+      perfil_category_id: parentId,
+      temple_channel_id: siblingTemple.id,
+      guild_id: guild.id,
+      message_id: message.id,
+      timestamp: new Date().toISOString()
+    };
+
+    const res = await axios.post(N8N_WEBHOOK_URL, payload, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(N8N_WEBHOOK_SECRET ? { 'x-webhook-secret': N8N_WEBHOOK_SECRET } : {})
+      },
+      httpsAgent,
+      timeout: 15000,
+      validateStatus: () => true
+    });
+
+    console.log('n8n(perfil_message) ->', res.status, typeof res.data === 'string' ? res.data : JSON.stringify(res.data));
+  } catch (err) {
+    console.error('❌ Error enviando perfil_message a n8n:', err?.message || err);
+  }
+});
 
 // ===== Envío/actualización del embed =====
 async function publishOrRefreshProfile(channel, user, patch = {}) {
