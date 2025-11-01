@@ -329,7 +329,7 @@ async function publishOrRefreshProfile(channel, user, patch = {}) {
 }
 
 // ===== Servidor Express: solo /webhooks/session-end =====
-function startWebhookServer(clientInstance) {
+ffunction startWebhookServer(clientInstance) {
   const app = express();
   app.use(express.json());
 
@@ -347,14 +347,7 @@ function startWebhookServer(clientInstance) {
     res.json({ ok: true, botReady: !!clientInstance?.user });
   });
 
-  // n8n manda canal + valores → el bot solo refresca el embed
-  app.post('/webhooks/session-end', checkSecret, async (req, res) => {
-    try {
-      if (!clientInstance?.user) {
-        // si el bot aún no está listo, devolvemos 503 controlado
-        return res.status(503).json({ error: 'bot_not_ready' });
-      }
-  // Purga de mensajes en un canal (llamado desde n8n)
+  // ✅ Purga de mensajes (RUTA SEPARADA, NO ANIDADA)
   app.post('/webhooks/purge-channel', checkSecret, async (req, res) => {
     try {
       if (!clientInstance?.user) {
@@ -364,18 +357,17 @@ function startWebhookServer(clientInstance) {
       const {
         guild_id,
         channel_id,
-        strategy = 'bulk',   // "bulk" (<14d) o "slow" (cualquiera, más lento)
+        strategy = 'bulk',       // "bulk" (<14d) o "slow" (cualquier antigüedad)
         limit = 1000,
         include_pins = false,
         before_id = undefined,
-        fallback_to_slow = true // si bulk se topa con >14d, intenta slow automático
+        fallback_to_slow = true
       } = req.body || {};
 
       if (!guild_id || !channel_id) {
         return res.status(400).json({ error: 'guild_id y channel_id requeridos' });
       }
 
-      // 1) intenta con la estrategia pedida
       let report = await purgeChannel(clientInstance, guild_id, channel_id, {
         strategy,
         limit: Number(limit),
@@ -383,7 +375,6 @@ function startWebhookServer(clientInstance) {
         beforeId: before_id
       });
 
-      // 2) si era bulk y quedaron muchos >14d, intenta slow si está activado
       if (
         strategy === 'bulk' &&
         fallback_to_slow &&
@@ -394,13 +385,9 @@ function startWebhookServer(clientInstance) {
         const slow = await purgeChannel(clientInstance, guild_id, channel_id, {
           strategy: 'slow',
           limit: remaining,
-          includePins: !!include_pins,
-          beforeId: undefined
+          includePins: !!include_pins
         });
-        report = {
-          ...report,
-          followUpSlow: slow
-        };
+        report = { ...report, followUpSlow: slow };
       }
 
       return res.json({ ok: true, guild_id, channel_id, report });
@@ -410,21 +397,26 @@ function startWebhookServer(clientInstance) {
     }
   });
 
+  // ✅ Session-end (RUTA SEPARADA, COMPLETA)
+  app.post('/webhooks/session-end', checkSecret, async (req, res) => {
+    try {
+      if (!clientInstance?.user) {
+        return res.status(503).json({ error: 'bot_not_ready' });
+      }
+
       const {
         guild_id,
         user_id,
-        perfil_channel_id, // canal exacto donde debe ir el perfil
-        sesiones_hechas,   // número (n8n ya lo calcula)
-        racha,             // número (n8n ya lo calcula)
-        deseo,             // opcional: solo en onboarding
-        referentes,        // opcional
-        contexto           // opcional
+        perfil_channel_id,
+        sesiones_hechas,
+        racha,
+        deseo,
+        referentes,
+        contexto
       } = req.body || {};
 
       if (!guild_id || !user_id || !perfil_channel_id) {
-        return res
-          .status(400)
-          .json({ error: 'guild_id, user_id y perfil_channel_id requeridos' });
+        return res.status(400).json({ error: 'guild_id, user_id y perfil_channel_id requeridos' });
       }
 
       const guild =
@@ -433,12 +425,10 @@ function startWebhookServer(clientInstance) {
       const member = await guild.members.fetch(user_id);
       const user = member.user;
 
-      // Canal de perfil que viene desde n8n
       const channel =
         guild.channels.cache.get(perfil_channel_id) ||
         (await guild.channels.fetch(perfil_channel_id));
 
-      // Estado previo (por si no pasan todos los campos cada vez)
       const prev = profiles.get(user.id) || {
         deseo: '',
         referentes: '',
@@ -449,7 +439,6 @@ function startWebhookServer(clientInstance) {
         channelId: perfil_channel_id,
       };
 
-      // Aplica solo lo que llega; si no llega, conserva
       const patch = {
         deseo: typeof deseo === 'string' ? deseo : prev.deseo,
         referentes: typeof referentes === 'string' ? referentes : prev.referentes,
@@ -468,8 +457,10 @@ function startWebhookServer(clientInstance) {
     }
   });
 
+  const PORT = process.env.PORT || process.env.WEBHOOK_PORT || 3000;
   app.listen(PORT, () => console.log(`🌐 Web server listening on :${PORT}`));
 }
+
 
 // ===== Inicia el bot =====
 client.login(process.env.DISCORD_TOKEN).catch(err => {
