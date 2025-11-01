@@ -36,6 +36,108 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
+
+async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/**
+ * Elimina mensajes de un canal.
+ * @param {import('discord.js').Client} clientInstance
+ * @param {string} guildId
+ * @param {string} channelId
+ * @param {object} opts
+ *   - strategy: "bulk" | "slow"
+ *   - limit: número máximo a borrar (default 1000)
+ *   - includePins: si true, borra también pins (por defecto false → los salta)
+ *   - beforeId: si se pasa, solo borra mensajes anteriores a ese ID
+ */
+async function purgeChannel(clientInstance, guildId, channelId, opts = {}) {
+  const {
+    strategy = 'bulk',
+    limit = 1000,
+    includePins = false,
+    beforeId = undefined
+  } = opts;
+
+  const guild = clientInstance.guilds.cache.get(guildId) || await clientInstance.guilds.fetch(guildId);
+  const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId);
+  if (!channel?.isTextBased?.()) throw new Error('El canal no es de texto.');
+
+  let deletedCount = 0;
+  let skippedPinned = 0;
+  let olderThan14Days = 0;
+  let errors = [];
+
+  // Helper para filtrar pins
+  const filterPins = msgs => includePins ? msgs : msgs.filter(m => !m.pinned);
+
+  if (strategy === 'bulk') {
+    // Borra en lotes (solo <14 días)
+    let before = beforeId;
+    while (deletedCount < limit) {
+      const size = Math.min(100, limit - deletedCount);
+      const batch = await channel.messages.fetch({ limit: size, ...(before ? { before } : {}) });
+      if (!batch.size) break;
+
+      const filtered = filterPins(batch);
+      // Discord rechaza los >14 días aquí; bulkDelete ya filtra si pasas true en segundo arg.
+      const toDelete = filtered;
+      if (!toDelete.size) break;
+
+      // bulkDelete ignora >14 días si pasas true
+      const deleted = await channel.bulkDelete(toDelete, true).catch(err => {
+        errors.push({ step: 'bulkDelete', message: err.message });
+        return null;
+      });
+      if (!deleted) break;
+
+      deletedCount += deleted.size;
+      // Cuenta los que no se borraron por antigüedad (aprox: batch - deleted)
+      olderThan14Days += (toDelete.size - deleted.size);
+
+      // Avanza el cursor
+      const oldest = toDelete.sort((a, b) => a.createdTimestamp - b.createdTimestamp).first();
+      before = oldest?.id;
+
+      // Suaviza rate limit
+      await sleep(500);
+      if (deleted.size < toDelete.size) {
+        // probablemente llegaste a mensajes >14d; sal y deja al caller decidir si hacer slow
+        break;
+      }
+    }
+  } else {
+    // "slow" → borra uno a uno, sirve para >14 días también
+    let before = beforeId;
+    while (deletedCount < limit) {
+      const size = Math.min(100, limit - deletedCount);
+      const batch = await channel.messages.fetch({ limit: size, ...(before ? { before } : {}) });
+      if (!batch.size) break;
+
+      const msgs = filterPins(batch)
+        .sort((a, b) => a.createdTimestamp - b.createdTimestamp); // de más antiguo a más nuevo
+
+      for (const m of msgs.values()) {
+        try {
+          await m.delete();
+          deletedCount++;
+          await sleep(350); // suavizar rate limit
+          if (deletedCount >= limit) break;
+        } catch (e) {
+          // Si fue por pin o permisos, cuenta y sigue
+          if (m.pinned && !includePins) skippedPinned++;
+          else errors.push({ id: m.id, message: e.message });
+        }
+      }
+
+      const oldest = batch.sort((a, b) => a.createdTimestamp - b.createdTimestamp).first();
+      before = oldest?.id;
+      if (msgs.size === 0) break;
+    }
+  }
+
+  return { ok: true, deletedCount, skippedPinned, olderThan14Days, strategyUsed: strategy, errors };
+}
+
 // ===== Arranca Express UNA sola vez (antes del login) =====
 startWebhookServer(client);
 
@@ -252,6 +354,61 @@ function startWebhookServer(clientInstance) {
         // si el bot aún no está listo, devolvemos 503 controlado
         return res.status(503).json({ error: 'bot_not_ready' });
       }
+  // Purga de mensajes en un canal (llamado desde n8n)
+  app.post('/webhooks/purge-channel', checkSecret, async (req, res) => {
+    try {
+      if (!clientInstance?.user) {
+        return res.status(503).json({ error: 'bot_not_ready' });
+      }
+
+      const {
+        guild_id,
+        channel_id,
+        strategy = 'bulk',   // "bulk" (<14d) o "slow" (cualquiera, más lento)
+        limit = 1000,
+        include_pins = false,
+        before_id = undefined,
+        fallback_to_slow = true // si bulk se topa con >14d, intenta slow automático
+      } = req.body || {};
+
+      if (!guild_id || !channel_id) {
+        return res.status(400).json({ error: 'guild_id y channel_id requeridos' });
+      }
+
+      // 1) intenta con la estrategia pedida
+      let report = await purgeChannel(clientInstance, guild_id, channel_id, {
+        strategy,
+        limit: Number(limit),
+        includePins: !!include_pins,
+        beforeId: before_id
+      });
+
+      // 2) si era bulk y quedaron muchos >14d, intenta slow si está activado
+      if (
+        strategy === 'bulk' &&
+        fallback_to_slow &&
+        report.olderThan14Days > 0 &&
+        report.deletedCount < Number(limit)
+      ) {
+        const remaining = Number(limit) - report.deletedCount;
+        const slow = await purgeChannel(clientInstance, guild_id, channel_id, {
+          strategy: 'slow',
+          limit: remaining,
+          includePins: !!include_pins,
+          beforeId: undefined
+        });
+        report = {
+          ...report,
+          followUpSlow: slow
+        };
+      }
+
+      return res.json({ ok: true, guild_id, channel_id, report });
+    } catch (e) {
+      console.error('purge-channel error:', e);
+      return res.status(500).json({ error: 'internal_error', detail: e.message });
+    }
+  });
 
       const {
         guild_id,
