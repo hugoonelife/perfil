@@ -329,7 +329,7 @@ async function publishOrRefreshProfile(channel, user, patch = {}) {
 }
 
 // ===== Servidor Express: solo /webhooks/session-end =====
-ffunction startWebhookServer(clientInstance) {
+function startWebhookServer(clientInstance) {
   const app = express();
   app.use(express.json());
 
